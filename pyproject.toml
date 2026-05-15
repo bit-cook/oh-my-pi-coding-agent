@@ -38,7 +38,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-robomp = ["prompts/*", "py.typed"]
+robomp = ["prompts/*", "py.typed", "static/*", "static/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -12,10 +12,11 @@ from typing import Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from robomp import github_events
 from robomp.config import Settings, get_settings
-from robomp.dashboard import render_index, tail_jsonl
+from robomp.dashboard import render_index, static_dir, tail_jsonl
 from robomp.db import (
     INACTIVE_EVENT_STATES,
     Database,
@@ -731,6 +732,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         capped = max(1, min(int(limit), 2000))
         entries = tail_jsonl(cfg.log_dir / "robomp.log.jsonl", limit=capped)
         return {"entries": entries, "count": len(entries), "limit": capped}
+
+    # Mount the built dashboard bundle. The `index.html` itself is served by
+    # the `@app.get("/")` handler above so the per-instance replay-token can
+    # be substituted; `/static/*` carries the hashed JS/CSS produced by Vite.
+    app.mount("/static", StaticFiles(directory=static_dir()), name="static")
 
     return app
 

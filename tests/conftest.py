@@ -7,7 +7,38 @@ from pathlib import Path
 import pytest
 
 from robomp.config import Settings, reset_settings_cache
+from robomp.dashboard import reset_index_cache, static_dir
 from robomp.db import Database, close_database
+
+# Minimum HTML the dashboard handler needs to render: `<title>` plus a script
+# block carrying the `__ROBOMP_CONFIG__` sentinel. The real Vite-built bundle
+# adds JS/CSS asset links; tests only care about the rendering contract.
+_PLACEHOLDER_INDEX_HTML = (
+    "<!doctype html>\n"
+    '<html lang="en">\n'
+    '  <head><meta charset="utf-8"><title>robomp</title></head>\n'
+    "  <body>\n"
+    '    <div id="app"></div>\n'
+    '    <script id="robomp-config" type="application/json">__ROBOMP_CONFIG__</script>\n'
+    "  </body>\n"
+    "</html>\n"
+)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ensure_dashboard_bundle() -> None:
+    """Guarantee a renderable dashboard bundle for the whole session.
+
+    The real bundle is produced by `bun run web:build`; CI and fresh clones
+    might not have run it yet. We only synthesise an `index.html` when one
+    isn't already present, so a developer's locally-built bundle isn't
+    clobbered by the test run.
+    """
+    directory = static_dir()
+    index = directory / "index.html"
+    if not index.exists():
+        index.write_text(_PLACEHOLDER_INDEX_HTML, encoding="utf-8")
+    reset_index_cache()
 
 
 def _baseline_env(tmp_path: Path) -> dict[str, str]:

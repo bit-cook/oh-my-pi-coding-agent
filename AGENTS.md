@@ -23,40 +23,48 @@ Webhook → durable queue → async dispatcher → per-issue git worktree → om
 - `src/robomp/prompts/` — Mustache-style `{{var}}` templates loaded by `persona.py` via `@cache` and `importlib.resources`. Shipped as package data (`pyproject.toml` `package-data`).
 - `tests/` — pytest suite. `test_worker_smoke.py` is gated on `ROBOMP_INTEGRATION=1`.
 - `data/` — runtime state (sqlite + WAL, `workspaces/`, `logs/`). Never committed.
-- `/work/pi/Dockerfile` — produces `oh-my-pi/artifacts:dev` (pi-natives `.node` + omp-rpc wheel). Built once per pi-source change via `just pi-artifacts`; robomp's runtime image consumes it via `COPY --from=`.
+- `/work/pi/Dockerfile` — produces `oh-my-pi/artifacts:dev` (pi-natives `.node` + omp-rpc wheel). Built once per pi-source change via `bun run pi-artifacts`; robomp's runtime image consumes it via `COPY --from=`.
 
 ## Development Commands
 
-Local venv (no docker): `just install` runs `pip install -e '.[dev]'`. From there:
+Task runner is now `bun` against the root `package.json` (workspaces = `["web"]`). `just` is gone; every recipe lives in the root `scripts` block. Local venv (no docker): `bun run install:py` runs `pip install -e '.[dev]'`. From there:
 
 ```
-just test                  # pytest -x tests/
-just test-file <PATH>      # single file
-just test-integration      # ROBOMP_INTEGRATION=1, requires omp on PATH
-just serve                 # python -m robomp serve on the host
+bun run test                # pytest -x tests/
+bun run test:file <PATH>    # single file
+bun run test:integration    # ROBOMP_INTEGRATION=1, requires omp on PATH
+bun run serve               # python -m robomp serve on the host
 ```
 
 Docker inner loop:
 
 ```
-just build                 # pi-artifacts (if pi changed) + docker compose build
-just dev                   # build + up -d + follow logs
-just up / just down / just restart / just logs / just sh
-just rebuild               # docker compose build --no-cache
+bun run build               # pi-artifacts (if pi changed) + docker compose build
+bun run dev                 # build + up -d + follow logs
+bun run up / down / restart / logs / sh
+bun run rebuild             # docker compose build --no-cache
+```
+
+Frontend (Vite + SolidJS, in `web/`):
+
+```
+bun run web:dev             # vite dev server with proxy to :8080
+bun run web:build           # produce src/robomp/static/ bundle
+bun run web:typecheck       # tsc --noEmit
 ```
 
 In-container CLI (`robomp` console script → `robomp.cli:main`):
 
 ```
-just triage owner/repo#N   # full pipeline against a live issue
-just replay <delivery_id>  # re-enqueue a stored webhook
-just issue-status          # tabular dump of issues table
-just cleanup owner/repo#N  # force workspace removal + state=abandoned
+bun run triage owner/repo#N   # full pipeline against a live issue
+bun run replay <delivery_id>  # re-enqueue a stored webhook
+bun run issue-status          # tabular dump of issues table
+bun run cleanup owner/repo#N  # force workspace removal + state=abandoned
 ```
 
-HTTP/sqlite inspection: `just healthz`, `just readyz`, `just events [N]`, `just issues [N]`, `just sqlite`, `just sql "<SQL>"`, `just tool-calls owner/repo#N`, `just stuck`. Webhook smoke: `just ping`. Danger: `just wipe-workspaces`, `just nuke-data`, `just reset`.
+HTTP/sqlite inspection: `bun run healthz`, `bun run readyz`, `bun run events [N]`, `bun run issues [N]`, `bun run sqlite`, `bun run sql "<SQL>"`, `bun run tool-calls owner/repo#N`, `bun run stuck`. Webhook smoke: `bun run ping`. Danger: `bun run wipe-workspaces`, `bun run nuke-data`, `bun run reset`.
 
-Lint + format via `ruff` (config in `pyproject.toml`): `just lint` to check, `just fix` to auto-fix and reformat. Run before committing non-trivial changes; CI is not yet wired up.
+Lint + format: TypeScript via Biome (config in `biome.json`), Python via Ruff (config in `pyproject.toml`). `bun run lint` checks both; `bun run fix` rewrites both. `bun run lint:ts` / `bun run lint:py` / `bun run fix:ts` / `bun run fix:py` scope to one language. `bun run typecheck` runs `tsc --noEmit` against `web/`. Run before committing non-trivial changes; CI is not yet wired up.
 
 ## Code Conventions & Common Patterns
 
@@ -97,10 +105,10 @@ Lint + format via `ruff` (config in `pyproject.toml`): `just lint` to check, `ju
 
 - **Python**: 3.11+ source target, 3.12 in container. Setuptools src layout (`pyproject.toml` `[tool.setuptools] package-dir = { "" = "src" }`).
 - **Package manager**: `pip` only. No poetry / uv / pdm files; don't introduce one.
-- **Task runner**: `just` (recipes are flat with `[group(...)]` tags). Always reach for an existing `just` recipe before invoking `docker compose` or `pytest` directly.
+- **Task runner**: `bun` (root `package.json` `scripts`). Always reach for an existing `bun run` recipe before invoking `docker compose` or `pytest` directly.
 - **Container runtime**: Docker Compose v2. The image embeds Bun 1.3.14 + a rustup launcher and exposes `omp` via a `/usr/local/bin/omp` shim; `ROBOMP_OMP_COMMAND=omp` should not need changing.
 - **Required env** (set in `.env`, see `.env.example`): `GITHUB_WEBHOOK_SECRET`, `ROBOMP_BOT_LOGIN`, `ROBOMP_GIT_AUTHOR_NAME`, `ROBOMP_GIT_AUTHOR_EMAIL`, `ROBOMP_REPO_ALLOWLIST`, plus model knobs (`ROBOMP_MODEL`, `ROBOMP_THINKING`, optional `ROBOMP_PROVIDER`) and rate-limit / concurrency / timeout overrides. **GitHub auth is mode-exclusive**: either set `ROBOMP_GH_PROXY_URL` + `ROBOMP_GH_PROXY_HMAC_KEY` (gh-proxy mode; PAT lives only in the sidecar container — the bundled compose default), or set `GITHUB_TOKEN` directly (single-process PAT mode). `Settings._validate_proxy_or_pat` rejects a `.env` that sets both.
-- **PI_ROOT staging**: removed. The pi-natives addon + omp-rpc wheel are produced by `/work/pi/Dockerfile` and tagged `oh-my-pi/artifacts:dev`; `just pi-artifacts` rebuilds them when pi source changes. The full pi checkout is still mounted read-only at `/work/pi` at runtime so omp executes against the live source. Build invalidation is now bounded: Python-only edits in robomp never trigger a natives recompile.
+- **PI_ROOT staging**: removed. The pi-natives addon + omp-rpc wheel are produced by `/work/pi/Dockerfile` and tagged `oh-my-pi/artifacts:dev`; `bun run pi-artifacts` rebuilds them when pi source changes. The full pi checkout is still mounted read-only at `/work/pi` at runtime so omp executes against the live source. Build invalidation is now bounded: Python-only edits in robomp never trigger a natives recompile.
 - **Forbidden**: no docker-in-docker, no extra service containers, no new background workers outside `WorkerPool`. The container itself is the isolation boundary; per-issue isolation is the git worktree.
 
 ## Testing & QA
@@ -113,5 +121,5 @@ Lint + format via `ruff` (config in `pyproject.toml`): `just lint` to check, `ju
 - **Isolation rules**: any test mutating env via `monkeypatch.setenv` MUST also call `reset_settings_cache()` to invalidate the `@cache`d `get_settings()`.
 - **Async tests**: `test_github_client.py` and `test_host_tools.py` spin custom event loops in background threads to bridge sync-style tests with async client code. Prefer `pytest-asyncio` `auto` mode (`async def test_*`) for new tests; only fall back to the loop helpers if matching the surrounding file's style.
 - **Mocking**: never patch internals; inject test doubles via `httpx.MockTransport` for HTTP and via the `db` / `tmp_path` fixtures for storage. Sandbox tests use a real local bare repo as the upstream.
-- **Integration**: `tests/test_worker_smoke.py` is gated by `ROBOMP_INTEGRATION=1` (uses `pytestmark.skipif`) and needs `omp` on `PATH`. Don't enable it in default `just test`.
+- **Integration**: `tests/test_worker_smoke.py` is gated by `ROBOMP_INTEGRATION=1` (uses `pytestmark.skipif`) and needs `omp` on `PATH`. Don't enable it in default `bun run test`.
 - **Coverage expectation**: ~80 unit tests currently. New code with a control-flow branch needs a test covering it; new host tools need at minimum a happy path + one validation-failure path mirroring `test_host_tools.py`. Test logical behavior (assertions on observable effects in DB / HTTP requests), not literal strings or default config values.

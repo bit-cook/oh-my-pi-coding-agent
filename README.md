@@ -169,9 +169,9 @@ $EDITOR .env                       # fill in the GitHub fields + commit identity
 openssl rand -hex 32                # → ROBOMP_GH_PROXY_HMAC_KEY (shared by both containers)
 openssl rand -hex 32                # → GITHUB_WEBHOOK_SECRET (paste into .env *and* GitHub later)
 
-just pi-artifacts                  # build oh-my-pi/artifacts:dev (natives + omp-rpc wheel)
-just build                         # pi-artifacts + docker compose build
-just up                            # docker compose up -d
+bun run pi-artifacts               # build oh-my-pi/artifacts:dev (natives + omp-rpc wheel)
+bun run build                      # pi-artifacts + docker compose build
+bun run up                         # docker compose up -d
 curl -fsS http://localhost:8080/healthz   # { "status": "ok" }
 ```
 
@@ -187,7 +187,7 @@ curl -fsS http://localhost:8080/healthz   # { "status": "ok" }
 
 The build is split across two Dockerfiles:
 
-- **`/work/pi/Dockerfile`** — produces the `oh-my-pi/artifacts:dev` image with `/out/pi_natives.linux-<arch>.node` (compiled from `crates/pi-natives`) and `/out/omp_rpc-*.whl`. `just pi-artifacts` builds it.
+- **`/work/pi/Dockerfile`** — produces the `oh-my-pi/artifacts:dev` image with `/out/pi_natives.linux-<arch>.node` (compiled from `crates/pi-natives`) and `/out/omp_rpc-*.whl`. `bun run pi-artifacts` builds it.
 - **`./Dockerfile`** (this repo) — slim runtime that copies those two artifacts from `oh-my-pi/artifacts:dev`, installs robomp's Python deps, and ships an `omp` shim that runs `bun $PI_ROOT/packages/coding-agent/src/cli.ts` against the live pi mount.
 
 Build invalidation is now bounded by intent: editing robomp Python code touches only the runtime layers, never the natives image. Editing pi source rebuilds the natives image, then robomp's `FROM oh-my-pi/artifacts:dev` consumes it.
@@ -318,7 +318,7 @@ pytest -x tests/                              # 80 tests, ~2s
 ROBOMP_INTEGRATION=1 pytest -x tests/test_worker_smoke.py
 
 # Live container.
-just build && just up
+bun run build && bun run up
 curl -fsS http://localhost:8080/healthz       # {"status":"ok"}
 
 # Live end-to-end against a real (or test) issue:
@@ -360,7 +360,7 @@ docker compose logs -f robomp                 # in another shell, watch each too
 robomp/
 ├── Dockerfile                  # slim runtime; consumes oh-my-pi/artifacts:dev
 ├── docker-compose.yml          # mounts, extra_hosts, per-service env allowlists
-├── justfile                     # `just pi-artifacts`, `just build`, `just up`, …
+├── package.json                 # `bun run pi-artifacts`, `bun run build`, `bun run up`, …
 ├── entrypoint.sh
 ├── pyproject.toml
 ├── README.md
@@ -404,7 +404,7 @@ robomp/
 | ``refusing to open PR: `bun check` failed before PR creation`` | The deterministic pre-PR `bun check` step failed. Fix the reported failure at the source, commit, and retry `gh_open_pr` (no need to rerun `bun run fix` yourself — the host tool does that too). |
 | Agent loops on the same comment | A non-bot reply triggered `handle_comment`; check `/events?limit=20` to see what was queued and `/issues` for the per-issue state. |
 | PR opened without the four template sections, or without `Fixes #N` | Shouldn't happen — `gh_open_pr` validates both. If you see it, the agent reached an out-of-process write somehow; inspect `tool_calls`. |
-| `omp` fails with `Failed to load pi_natives` | The `pi_natives.linux-<arch>.node` is missing or built for the wrong arch. Rebuild via `just pi-artifacts` (then `just build` to refresh the runtime image). The natives source lives at `crates/pi-natives/` inside `/work/pi`. |
+| `omp` fails with `Failed to load pi_natives` | The `pi_natives.linux-<arch>.node` is missing or built for the wrong arch. Rebuild via `bun run pi-artifacts` (then `bun run build` to refresh the runtime image). The natives source lives at `crates/pi-natives/` inside `/work/pi`. |
 | Tasks all fail with `No API key found for <provider>` | `~/.omp/agent/models.yml` isn't mounted, or its provider id doesn't match what's in `ROBOMP_MODEL`. Check `docker compose exec robomp ls /root/.omp/agent/`. |
 
 ---

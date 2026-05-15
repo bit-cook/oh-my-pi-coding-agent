@@ -14,7 +14,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Tag of the pre-built artifacts image produced by `just pi-artifacts`
+        # Tag of the pre-built artifacts image produced by `bun run pi-artifacts`
         # (sources: /work/pi/Dockerfile). Override per-environment as needed.
         PI_ARTIFACTS_IMAGE: oh-my-pi/artifacts:dev
     image: robomp:dev

@@ -2,15 +2,20 @@
 ###############################################################################
 # robomp — orchestrator image
 #
-# Consumes pre-built artifacts from `oh-my-pi/artifacts:dev` (built separately
-# from /work/pi/Dockerfile, see `just pi-artifacts`):
+# Build is split across three stages:
 #
-#   - pi_natives.linux-<arch>.node → /opt/bun/bin/  (the pi loader probes here)
-#   - omp_rpc-*.whl                → pip install
+#   1) pi-artifacts — pull a pre-built `oh-my-pi/artifacts:dev` image (built
+#      separately from /work/pi/Dockerfile, see `bun run pi-artifacts`):
+#        - pi_natives.linux-<arch>.node → /opt/bun/bin/  (the pi loader probes here)
+#        - omp_rpc-*.whl                → pip install
+#   2) web-builder    — Bun + Vite compile the SolidJS dashboard bundle from
+#      the `web/` workspace into `web/dist/`.
+#   3) runtime        — slim Python 3.12 image that copies in (1) the natives
+#      + wheel, (2) the dashboard bundle, and (3) the robomp source.
 #
 # At runtime the full pi checkout is mounted read-only at /work/pi so `omp`
 # (the Bun shim below) executes the coding-agent source directly. The image
-# itself stays slim: no rust/bun compile, no pi source tree.
+# itself stays slim: no rust compile, no pi source tree, no node_modules.
 ###############################################################################
 
 ARG PI_ARTIFACTS_IMAGE=oh-my-pi/artifacts:dev
@@ -21,7 +26,21 @@ ARG PI_ARTIFACTS_IMAGE=oh-my-pi/artifacts:dev
 FROM ${PI_ARTIFACTS_IMAGE} AS pi-artifacts
 
 ############################
-# 2) runtime — slim image with everything robomp needs at boot.
+# 2) web-builder — Bun + Vite, builds the SolidJS dashboard bundle.
+############################
+FROM oven/bun:1.3.14-slim AS web-builder
+WORKDIR /work
+# The repo is a Bun workspace (`workspaces: ["web"]` at the root). Install
+# from the root lockfile so the web subpackage resolves against the same
+# pinned dependency graph used locally.
+COPY package.json bun.lock ./
+COPY web/package.json ./web/package.json
+RUN bun install --frozen-lockfile
+COPY web/ ./web/
+RUN bun --cwd=web run build
+
+############################
+# 3) runtime — slim image with everything robomp needs at boot.
 ############################
 FROM python:3.12-slim-bookworm AS runtime
 
@@ -83,9 +102,12 @@ fi
 exec bun "$PI_ROOT/packages/coding-agent/src/cli.ts" "$@"
 EOF
 
-# robomp itself.
+# robomp itself. Drop the Vite-built dashboard into the package tree before
+# `pip install` so it lands in the installed wheel (`static/**/*` is declared
+# as package-data in pyproject.toml).
 COPY pyproject.toml ./
 COPY src/ ./src/
+COPY --from=web-builder /work/web/dist/ ./src/robomp/static/
 RUN pip install --upgrade pip \
     && pip install \
         "fastapi>=0.112" "uvicorn[standard]>=0.30" "httpx>=0.27" \

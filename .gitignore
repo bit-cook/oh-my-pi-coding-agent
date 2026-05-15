@@ -14,3 +14,12 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+node_modules/
+*.tsbuildinfo
+.vite/
+
+# Frontend bundle. The Vite build (`bun run web:build` / Docker `web-builder`
+# stage) writes hashed JS/CSS chunks into `src/robomp/static/`. Nothing
+# committed; the test suite synthesises a minimal placeholder via conftest.
+src/robomp/static/
+web/dist/

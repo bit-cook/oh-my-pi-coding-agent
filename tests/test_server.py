@@ -65,15 +65,33 @@ def test_index_serves_dashboard_html(settings: Settings) -> None:
         resp = client.get("/")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
-    # A few load-bearing markers from the page; if these vanish, the dashboard
-    # changed shape and the rest of the test suite should be updated too.
+    # Stable anchors only. The Vite bundle hashes its asset filenames on every
+    # build, but the structural skeleton (title, mount node, config script)
+    # has to stay intact for the SPA to bootstrap.
     assert "<title>robomp</title>" in resp.text
-    assert "api/status" in resp.text
-    assert "api/logs" in resp.text
-    assert "Retry latest run" in resp.text
-    assert "current issue events" in resp.text
-    assert 'document.querySelector("main").addEventListener' in resp.text
-    assert '$("main").addEventListener' not in resp.text
+    assert 'id="app"' in resp.text
+    assert 'id="robomp-config"' in resp.text
+    # The sentinel must have been substituted — neither the literal sentinel
+    # nor an empty script body is acceptable.
+    assert "__ROBOMP_CONFIG__" not in resp.text
+    assert '"replayEnabled":' in resp.text
+
+
+def test_index_substitutes_replay_token(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a replay token is set, the config blob exposes it to the SPA."""
+    monkeypatch.setenv("ROBOMP_REPLAY_TOKEN", "secret-token-7")
+    reset_settings_cache()
+    cfg = Settings()  # type: ignore[call-arg]
+    cfg.ensure_paths()
+    app = create_app(cfg)
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/")
+        assert resp.status_code == 200
+        assert '"replayEnabled":true' in resp.text
+        assert '"replayToken":"secret-token-7"' in resp.text
+    finally:
+        close_database()
 
 
 def test_api_status_reports_runtime_counts_and_inflight(settings: Settings) -> None:

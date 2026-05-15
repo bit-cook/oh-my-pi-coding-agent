@@ -9,3 +9,7 @@ __pycache__/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+web/node_modules/
+web/dist/
+src/robomp/static/
+node_modules/
