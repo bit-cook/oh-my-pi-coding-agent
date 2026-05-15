@@ -80,6 +80,60 @@ def test_requeue_event_can_be_restricted_by_source_state(db: Database) -> None:
     assert db.get_event("running-event").state == "running"
 
 
+def test_latest_issue_events_ignore_skipped_noise(db: Database) -> None:
+    fixed = issue_key("octo/widget", 1)
+    still_failed = issue_key("octo/widget", 2)
+    db.record_event(
+        delivery_id="fixed-failed",
+        event_type="issues",
+        repo="octo/widget",
+        issue_key=fixed,
+        payload={"action": "opened"},
+        state="failed",
+    )
+    db.record_event(
+        delivery_id="fixed-done",
+        event_type="issues",
+        repo="octo/widget",
+        issue_key=fixed,
+        payload={"action": "opened"},
+        state="done",
+    )
+    db.record_event(
+        delivery_id="failed-run",
+        event_type="issues",
+        repo="octo/widget",
+        issue_key=still_failed,
+        payload={"action": "opened"},
+        state="failed",
+    )
+    db.record_event(
+        delivery_id="label-noise",
+        event_type="issues",
+        repo="octo/widget",
+        issue_key=still_failed,
+        payload={"action": "labeled"},
+        state="skipped",
+        last_error="issues.labeled ignored",
+    )
+
+    latest_failed = db.latest_event_for_issue(still_failed)
+    latest_raw = db.latest_event_for_issue(still_failed, include_skipped=True)
+    assert latest_failed is not None
+    assert latest_raw is not None
+    assert latest_failed.delivery_id == "failed-run"
+    assert latest_raw.delivery_id == "label-noise"
+
+    latest = db.latest_events_for_issues((fixed, still_failed))
+    assert latest[fixed].delivery_id == "fixed-done"
+    assert latest[still_failed].delivery_id == "failed-run"
+
+    counts = db.latest_issue_event_state_counts()
+    assert counts["done"] == 1
+    assert counts["failed"] == 1
+    assert counts["skipped"] == 0
+
+
 def test_reset_stuck_running_recovers(db: Database) -> None:
     db.record_event(
         delivery_id="d1",

@@ -117,6 +117,20 @@ class IssueRow:
     classification: str | None = None
 
 
+def _event_row_from_db_row(row: sqlite3.Row) -> EventRow:
+    return EventRow(
+        delivery_id=row["delivery_id"],
+        event_type=row["event_type"],
+        repo=row["repo"],
+        issue_key=row["issue_key"],
+        payload=json.loads(row["payload_json"]),
+        received_at=row["received_at"],
+        state=row["state"],
+        attempts=int(row["attempts"]),
+        last_error=row["last_error"],
+    )
+
+
 @dataclass(slots=True, frozen=True)
 class SubmissionAdmission:
     accepted: bool
@@ -334,33 +348,63 @@ class Database:
             )
             return True
 
-    def latest_event_for_issue(self, key: str) -> EventRow | None:
-        """Return the most recent event whose issue_key matches, or None."""
+    def latest_event_for_issue(self, key: str, *, include_skipped: bool = False) -> EventRow | None:
+        """Return the newest event for an issue.
+
+        By default this ignores `skipped` rows. Those are usually webhook noise
+        (`issues.labeled ignored`, bot/self comments) and must not hide the last
+        real processing run when the dashboard retries a failed issue.
+        """
+        state_filter = "" if include_skipped else "AND state <> 'skipped'"
         with self._lock:
             row = self._conn.execute(
-                """
+                f"""
                 SELECT delivery_id, event_type, repo, issue_key, payload_json, received_at,
                        state, attempts, last_error
                 FROM events
                 WHERE issue_key = ?
-                ORDER BY received_at DESC
+                  {state_filter}
+                ORDER BY received_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (key,),
             ).fetchone()
         if row is None:
             return None
-        return EventRow(
-            delivery_id=row["delivery_id"],
-            event_type=row["event_type"],
-            repo=row["repo"],
-            issue_key=row["issue_key"],
-            payload=json.loads(row["payload_json"]),
-            received_at=row["received_at"],
-            state=row["state"],
-            attempts=int(row["attempts"]),
-            last_error=row["last_error"],
-        )
+        return _event_row_from_db_row(row)
+
+    def latest_events_for_issues(
+        self,
+        keys: Iterable[str],
+        *,
+        include_skipped: bool = False,
+    ) -> dict[str, EventRow]:
+        """Return newest event rows keyed by issue key for a bounded issue set."""
+        unique = tuple({k for k in keys if k})
+        if not unique:
+            return {}
+        state_filter = "" if include_skipped else "AND state <> 'skipped'"
+        out: dict[str, EventRow] = {}
+        with self._lock:
+            for start in range(0, len(unique), 500):
+                batch = unique[start : start + 500]
+                placeholders = ",".join("?" * len(batch))
+                rows = self._conn.execute(
+                    f"""
+                    SELECT delivery_id, event_type, repo, issue_key, payload_json, received_at,
+                           state, attempts, last_error
+                    FROM events
+                    WHERE issue_key IN ({placeholders})
+                      {state_filter}
+                    ORDER BY issue_key ASC, received_at DESC, rowid DESC
+                    """,
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    issue = row["issue_key"]
+                    if issue not in out:
+                        out[issue] = _event_row_from_db_row(row)
+        return out
 
     def event_state_counts(self) -> dict[str, int]:
         """Return current row counts per event state, including states with zero rows."""
@@ -369,6 +413,33 @@ class Database:
         counts: dict[str, int] = dict.fromkeys(("queued", "running", "done", "failed", "skipped"), 0)
         for row in rows:
             counts[row["state"]] = int(row["n"])
+        return counts
+
+    def latest_issue_event_state_counts(self) -> dict[str, int]:
+        """Count each issue by its newest non-skipped event state.
+
+        This is the dashboard's "current issue event" view: a later successful
+        run clears an older failure for that issue, and ignored webhook noise
+        does not make a failed issue look skipped.
+        """
+        counts: dict[str, int] = dict.fromkeys(("queued", "running", "done", "failed", "skipped"), 0)
+        seen: set[str] = set()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT issue_key, state
+                FROM events
+                WHERE issue_key IS NOT NULL
+                  AND state <> 'skipped'
+                ORDER BY issue_key ASC, received_at DESC, rowid DESC
+                """
+            ).fetchall()
+        for row in rows:
+            key = row["issue_key"]
+            if key in seen:
+                continue
+            seen.add(key)
+            counts[row["state"]] += 1
         return counts
 
     def list_running_events(self) -> list[dict[str, Any]]:

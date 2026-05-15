@@ -565,7 +565,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(403, f"{repo_full} not in ROBOMP_REPO_ALLOWLIST")
             row = db.latest_event_for_issue(make_issue_key(repo_full, number))
             if row is None:
-                raise HTTPException(404, f"no stored event for {repo_full}#{number}")
+                raise HTTPException(404, f"no retryable stored event for {repo_full}#{number}")
             target = row.delivery_id
         else:
             raise HTTPException(400, "retry requires 'delivery_id' or 'issue'")
@@ -667,6 +667,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pool: WorkerPool = bag["pool"]
         started = float(bag.get("started_at") or time.time())
         issues_rows = db.list_issues(limit=200)
+        latest_events = db.latest_events_for_issues(r.key for r in issues_rows)
+
+        def _latest_event_payload(key: str) -> dict[str, Any] | None:
+            latest = latest_events.get(key)
+            if latest is None:
+                return None
+            return {
+                "delivery_id": latest.delivery_id,
+                "event_type": latest.event_type,
+                "state": latest.state,
+                "attempts": latest.attempts,
+                "received_at": latest.received_at,
+                "last_error": latest.last_error,
+            }
+
         events_rows = db.list_events(limit=25)
         return {
             "runtime": {
@@ -678,6 +693,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "uptime_seconds": max(0.0, time.time() - started),
             },
             "event_counts": db.event_state_counts(),
+            "issue_event_counts": db.latest_issue_event_state_counts(),
             "running_events": db.list_running_events(),
             "inflight": await pool.inflight_snapshot(),
             "issues": [
@@ -690,6 +706,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "state": r.state,
                     "classification": r.classification,
                     "updated_at": r.updated_at,
+                    "latest_event": _latest_event_payload(r.key),
                 }
                 for r in issues_rows
             ],

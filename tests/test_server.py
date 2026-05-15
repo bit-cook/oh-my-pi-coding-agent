@@ -115,6 +115,65 @@ def test_api_status_reports_runtime_counts_and_inflight(settings: Settings) -> N
     assert {"d-queued", "d-skipped", "d-running"}.issubset(delivery_ids)
 
 
+def test_api_status_reports_current_issue_event_state(settings: Settings) -> None:
+    app = create_app(settings)
+    fixed = issue_key("octo/widget", 44)
+    failed = issue_key("octo/widget", 69)
+    with TestClient(app) as client:
+        db = get_database(settings.sqlite_path)
+        db.upsert_issue(key=fixed, repo="octo/widget", number=44, state="closed", pr_number=1084)
+        db.upsert_issue(key=failed, repo="octo/widget", number=69, state="reproducing")
+        db.record_event(
+            delivery_id="fixed-old-failure",
+            event_type="issues",
+            repo="octo/widget",
+            issue_key=fixed,
+            payload={"action": "opened"},
+            state="failed",
+        )
+        db.record_event(
+            delivery_id="fixed-later-success",
+            event_type="issues",
+            repo="octo/widget",
+            issue_key=fixed,
+            payload={"action": "closed"},
+            state="done",
+        )
+        db.record_event(
+            delivery_id="still-failed",
+            event_type="issues",
+            repo="octo/widget",
+            issue_key=failed,
+            payload={"action": "opened"},
+            state="failed",
+        )
+        db.record_event(
+            delivery_id="failed-label-noise",
+            event_type="issues",
+            repo="octo/widget",
+            issue_key=failed,
+            payload={"action": "labeled"},
+            state="skipped",
+            last_error="issues.labeled ignored",
+        )
+
+        resp = client.get("/api/status")
+    close_database()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["event_counts"]["failed"] == 2
+    assert body["issue_event_counts"]["failed"] == 1
+    assert body["issue_event_counts"]["done"] == 1
+    assert body["issue_event_counts"]["skipped"] == 0
+
+    issues = {i["key"]: i for i in body["issues"]}
+    assert issues[fixed]["latest_event"]["delivery_id"] == "fixed-later-success"
+    assert issues[fixed]["latest_event"]["state"] == "done"
+    assert issues[failed]["latest_event"]["delivery_id"] == "still-failed"
+    assert issues[failed]["latest_event"]["state"] == "failed"
+
+
 def test_api_logs_returns_empty_when_file_missing(settings: Settings) -> None:
     app = create_app(settings)
     with TestClient(app) as client:
@@ -545,7 +604,7 @@ def test_trigger_retry_by_delivery_id_requeues(env, monkeypatch: pytest.MonkeyPa
     close_database()
 
 
-def test_trigger_retry_by_issue_finds_latest_event(env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trigger_retry_by_issue_finds_latest_non_skipped_event(env, monkeypatch: pytest.MonkeyPatch) -> None:
     token = _enable_replay(monkeypatch)
     cfg = Settings()  # type: ignore[call-arg]
     cfg.ensure_paths()
@@ -569,6 +628,14 @@ def test_trigger_retry_by_issue_finds_latest_event(env, monkeypatch: pytest.Monk
             payload={"a": 2},
             state="done",
         )
+        db.record_event(
+            delivery_id="d-label-noise",
+            event_type="issues",
+            repo="octo/widget",
+            issue_key=key,
+            payload={"a": 3},
+            state="skipped",
+        )
         resp = client.post(
             "/api/trigger",
             json={"mode": "retry", "issue": "octo/widget#9"},
@@ -576,7 +643,7 @@ def test_trigger_retry_by_issue_finds_latest_event(env, monkeypatch: pytest.Monk
         )
         body = resp.json()
         assert resp.status_code == 202, body
-        # Most recently-received row wins.
+        # Most recently-received non-skipped row wins; ignored label events do not hide it.
         assert body["delivery"] == "d-old-2"
         assert get_database(cfg.sqlite_path).get_event("d-old-2").state == "queued"
     close_database()

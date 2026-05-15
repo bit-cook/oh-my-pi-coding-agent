@@ -140,6 +140,7 @@ _INDEX_TEMPLATE = """<!doctype html>
     border-radius: 4px; padding: 3px 6px; font: inherit; }
   .toolbar input[type=checkbox] { accent-color: var(--accent); }
   .err-cell { color: var(--err); white-space: pre-wrap; word-break: break-word; max-width: 480px; }
+  .event-note { color: var(--muted); font-size: 11px; margin-top: 2px; }
   code { background: var(--panel-2); padding: 0 4px; border-radius: 3px; }
   button { font: inherit; background: var(--panel-2); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
@@ -210,7 +211,7 @@ _INDEX_TEMPLATE = """<!doctype html>
       <span class="row-label">issue</span>
       <input id="t-issue" type="text" placeholder="owner/repo#42" autocomplete="off" />
       <button class="primary" id="t-triage">Fetch &amp; triage</button>
-      <button id="t-retry">Retry latest event</button>
+      <button id="t-retry">Retry latest run</button>
 
     </div>
     <div class="trigger-status" id="t-status"></div>
@@ -230,7 +231,7 @@ _INDEX_TEMPLATE = """<!doctype html>
   </section>
 
   <section class="full">
-    <h2>queue</h2>
+    <h2>current issue events</h2>
     <div class="stats" id="stats"></div>
   </section>
 
@@ -303,10 +304,16 @@ function prLink(repo, prNumber) {
   return `<a href="https://github.com/${esc(repo)}/pull/${esc(prNumber)}" target="_blank" rel="noopener">#${esc(prNumber)}</a>`;
 }
 
+function shortText(value, limit = 180) {
+  const text = String(value || "");
+  return text.length > limit ? text.slice(0, limit - 1) + "…" : text;
+}
+
 function renderStats(counts) {
   const order = ["queued", "running", "done", "failed", "skipped"];
+  const title = "newest non-skipped event per issue";
   $("stats").innerHTML = order.map((k) =>
-    `<div class="stat"><div class="k">${k}</div><div class="v">${counts[k] ?? 0}</div></div>`).join("");
+    `<div class="stat" title="${title}"><div class="k">${k}</div><div class="v">${counts[k] ?? 0}</div></div>`).join("");
 }
 
 function renderWorking(running, inflight) {
@@ -366,17 +373,30 @@ function renderIssues(issues) {
     $("issues").innerHTML = '<div class="empty">no active issues</div>';
     return;
   }
-  const rows = active.map((i) =>
-    `<tr>
+  const rows = active.map((i) => {
+    const ev = i.latest_event;
+    const lastEvent = ev
+      ? `<span class="pill ${esc(ev.state)}">${esc(ev.state)}</span><div class="event-note">${esc(ev.event_type)} · attempt ${esc(ev.attempts)} · ${esc(fmtAge(ev.received_at))}</div>`
+      : '<span class="muted">—</span>';
+    const error = ev && ev.state === "failed" && ev.last_error
+      ? `<span title="${esc(ev.last_error)}">${esc(shortText(ev.last_error))}</span>`
+      : '<span class="muted">—</span>';
+    const action = CONFIG.replayEnabled && ev && ev.state === "failed"
+      ? `<button class="small" data-retry="${esc(ev.delivery_id)}">retry</button>`
+      : '<span class="muted">—</span>';
+    return `<tr>
       <td>${issueLink(i.repo, i.number)}</td>
       <td><span class="pill">${esc(i.state)}</span></td>
+      <td>${lastEvent}</td>
       <td>${esc(i.classification || "")}</td>
       <td>${i.branch ? `<code>${esc(i.branch)}</code>` : '<span class="muted">—</span>'}</td>
       <td>${prLink(i.repo, i.pr_number)}</td>
-      <td class="muted">${fmtAge(i.updated_at)}</td>
-    </tr>`).join("");
+      <td class="err-cell">${error}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join("");
   $("issues").innerHTML =
-    `<table><thead><tr><th>issue</th><th>state</th><th>class</th><th>branch</th><th>pr</th><th>updated</th></tr></thead><tbody>${rows}</tbody></table>`;
+    `<table><thead><tr><th>issue</th><th>state</th><th>last event</th><th>class</th><th>branch</th><th>pr</th><th>error</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderEvents(events) {
@@ -386,7 +406,7 @@ function renderEvents(events) {
   }
   const rows = events.map((e) => {
     const [repo, number] = (e.issue_key || "").split("#");
-    const canRetry = e.state !== "running" && e.state !== "queued";
+    const canRetry = e.state === "failed" || e.state === "done";
     const retryBtn = canRetry
       ? `<button class="small" data-retry="${esc(e.delivery_id)}">retry</button>`
       : '<span class="muted">—</span>';
@@ -449,7 +469,7 @@ async function tick() {
     $("m-allow").textContent = status.runtime.repo_allowlist.length
       ? status.runtime.repo_allowlist.join(", ") : "(none)";
     $("m-refresh").textContent = "updated " + new Date().toLocaleTimeString();
-    renderStats(status.event_counts);
+    renderStats(status.issue_event_counts || status.event_counts);
     renderWorking(status.running_events, status.inflight);
     renderIssues(status.issues);
     renderEvents(status.recent_events);
@@ -508,7 +528,7 @@ $("t-retry").addEventListener("click", () => {
 $("t-issue").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") $("t-triage").click();
 });
-$("events").addEventListener("click", (ev) => {
+$("main").addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-retry]");
   if (!btn) return;
   postTrigger({ mode: "retry", delivery_id: btn.dataset.retry });
