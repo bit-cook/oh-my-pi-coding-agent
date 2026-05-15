@@ -176,6 +176,7 @@ async def triage_issue(
     payload: Mapping[str, Any],
     delivery_id: str,
     attempts: int = 0,
+    slot_uid: int | None = None,
 ) -> None:
     repo, issue = await _resolve_repo_and_issue(github, payload)
     if issue.is_pull_request:
@@ -192,6 +193,7 @@ async def triage_issue(
         default_branch=repo.default_branch,
         author_name=settings.resolved_author_name,
         author_email=settings.git_author_email,
+        slot_uid=slot_uid,
     )
     db.upsert_issue(
         key=key,
@@ -211,6 +213,7 @@ async def triage_issue(
         workspace=workspace,
         delivery_id=delivery_id,
         attempts=attempts,
+        slot_uid=slot_uid,
     )
     await run_task(task_kind="triage_issue", inputs=inputs)
 
@@ -225,6 +228,7 @@ async def handle_comment(
     payload: Mapping[str, Any],
     delivery_id: str,
     attempts: int = 0,
+    slot_uid: int | None = None,
 ) -> None:
     repo, issue = await _resolve_repo_and_issue(github, payload)
     key = issue_key(repo.full_name, issue.number)
@@ -250,6 +254,7 @@ async def handle_comment(
             default_branch=repo.default_branch,
             author_name=settings.resolved_author_name,
             author_email=settings.git_author_email,
+            slot_uid=slot_uid,
         )
         db.upsert_issue(
             key=key,
@@ -269,6 +274,7 @@ async def handle_comment(
             workspace=workspace,
             delivery_id=delivery_id,
             attempts=attempts,
+            slot_uid=slot_uid,
         )
         directive = await _attach_thread(github, directive, repo.full_name, issue.number, is_pr=False)
         await run_task(task_kind="triage_issue", inputs=inputs, directive=directive)
@@ -299,6 +305,7 @@ async def handle_comment(
             default_branch=repo.default_branch,
             author_name=settings.resolved_author_name,
             author_email=settings.git_author_email,
+            slot_uid=slot_uid,
         )
         db.upsert_issue(
             key=key,
@@ -318,6 +325,7 @@ async def handle_comment(
             workspace=workspace,
             delivery_id=delivery_id,
             attempts=attempts,
+            slot_uid=slot_uid,
         )
         directive = await _attach_thread(github, directive, repo.full_name, issue.number, is_pr=False)
         await run_task(task_kind="handle_comment", inputs=inputs, comment=comment, directive=directive)
@@ -332,6 +340,7 @@ async def handle_comment(
         existing_branch=existing.branch,
         author_name=settings.resolved_author_name,
         author_email=settings.git_author_email,
+        slot_uid=slot_uid,
     )
     inputs = TaskInputs(
         settings=settings,
@@ -343,6 +352,7 @@ async def handle_comment(
         workspace=workspace,
         delivery_id=delivery_id,
         attempts=attempts,
+        slot_uid=slot_uid,
     )
     directive = await _attach_thread(github, directive, repo.full_name, issue.number, is_pr=False)
     await run_task(task_kind="handle_comment", inputs=inputs, comment=comment, directive=directive)
@@ -358,6 +368,7 @@ async def handle_review(
     payload: Mapping[str, Any],
     delivery_id: str,
     attempts: int = 0,
+    slot_uid: int | None = None,
 ) -> None:
     pr = payload.get("pull_request") or {}
     pr_number = int(pr.get("number") or 0)
@@ -390,6 +401,7 @@ async def handle_review(
         existing_branch=issue_row.branch,
         author_name=settings.resolved_author_name,
         author_email=settings.git_author_email,
+        slot_uid=slot_uid,
     )
     comment = payload.get("comment") or {}
     user = comment.get("user") or {}
@@ -411,6 +423,7 @@ async def handle_review(
         workspace=workspace,
         delivery_id=delivery_id,
         attempts=attempts,
+        slot_uid=slot_uid,
     )
     await run_task(
         task_kind="handle_review",
@@ -430,6 +443,7 @@ async def handle_pr_conversation(
     payload: Mapping[str, Any],
     delivery_id: str,
     attempts: int = 0,
+    slot_uid: int | None = None,
 ) -> None:
     """Handle a regular (non-review) comment on a bot-authored PR.
 
@@ -493,6 +507,7 @@ async def handle_pr_conversation(
         existing_branch=existing_branch,
         author_name=settings.resolved_author_name,
         author_email=settings.git_author_email,
+        slot_uid=slot_uid,
     )
     if directive is not None and (issue_row.branch is None or issue_row.branch != workspace.branch):
         db.upsert_issue(
@@ -514,6 +529,7 @@ async def handle_pr_conversation(
         workspace=workspace,
         delivery_id=delivery_id,
         attempts=attempts,
+        slot_uid=slot_uid,
     )
     directive = await _attach_thread(github, directive, repo_full, pr_number, is_pr=True)
     await run_task(task_kind="handle_comment", inputs=inputs, comment=comment, pr_number=pr_number, directive=directive)

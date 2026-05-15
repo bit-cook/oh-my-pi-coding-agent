@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import traceback
 from collections.abc import Callable
 from contextlib import suppress
@@ -14,6 +15,7 @@ from robomp.config import Settings
 from robomp.db import Database, EventRow
 from robomp.github_backend import GitHubBackend
 from robomp.sandbox import GitTransport, SandboxManager
+from robomp.slot_pool import SlotPool
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ class WorkerPool:
         github: GitHubBackend,
         sandbox: SandboxManager,
         git_transport: GitTransport,
+        slot_pool: SlotPool | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -38,7 +41,17 @@ class WorkerPool:
         self._workers: list[asyncio.Task[None]] = []
         self._wakeup = asyncio.Event()
         self._stop = asyncio.Event()
-        self._semaphore = asyncio.Semaphore(settings.max_concurrency)
+        self._slot_pool: SlotPool | None
+        self._semaphore: asyncio.Semaphore | None
+        if slot_pool is not None:
+            self._slot_pool = slot_pool
+            self._semaphore = None
+        elif os.geteuid() == 0:
+            self._slot_pool = SlotPool(range(2001, 2001 + settings.max_concurrency))
+            self._semaphore = None
+        else:
+            self._slot_pool = None
+            self._semaphore = asyncio.Semaphore(settings.max_concurrency)
         self._inflight: set[str] = set()
         self._inflight_lock = asyncio.Lock()
         # Cancellation: workers register a stop hook via the contextvar helpers
@@ -75,7 +88,7 @@ class WorkerPool:
         recovered = self.db.reset_stuck_running()
         if recovered:
             log.info("recovered stuck events", extra={"count": recovered})
-        # Single dispatcher loop is simpler than N workers; concurrency is gated by the semaphore.
+        # Single dispatcher loop is simpler than N workers; concurrency is gated by the slot pool.
         self._workers.append(asyncio.create_task(self._dispatch_loop(), name="robomp-dispatch"))
 
     async def stop(self, *, drain_timeout: float = 25.0, kill_timeout: float = 5.0) -> None:
@@ -107,7 +120,7 @@ class WorkerPool:
         # 3. Time's up — for every still-running task: fire its cancel hook
         #    if one was registered (kills the omp subprocess); otherwise
         #    cancel the asyncio task itself so a worker stuck pre-hook
-        #    (e.g. waiting on the semaphore or inside RpcClient.__enter__)
+        #    (e.g. waiting on the slot pool or inside RpcClient.__enter__)
         #    cannot proceed to spawn a fresh subprocess after stop()
         #    returns. Either way we record the delivery id in
         #    `_shutdown_cancelled` so `_run_event`'s exception path
@@ -147,7 +160,7 @@ class WorkerPool:
                     except TimeoutError:
                         pass
                     continue
-                # Schedule the task; the semaphore caps concurrent execution.
+                # Schedule the task; the slot pool caps concurrent execution.
                 task = asyncio.create_task(self._run_event(row), name=f"robomp-event-{row.delivery_id[:8]}")
                 self._inflight_tasks[task] = row.delivery_id
                 task.add_done_callback(lambda t: self._inflight_tasks.pop(t, None))
@@ -219,42 +232,56 @@ class WorkerPool:
 
     async def _run_event(self, row: EventRow) -> None:
         token = set_current_event(self, row.delivery_id)
-        async with self._semaphore:
-            try:
-                await self._dispatch(row)
-                if row.delivery_id in self._cancelled:
-                    self.db.mark_event(row.delivery_id, "failed", error="cancelled by operator")
-                else:
-                    self.db.mark_event(row.delivery_id, "done")
-            except Exception as exc:
-                if row.delivery_id in self._shutdown_cancelled:
-                    # `stop()` deliberately interrupted this delivery —
-                    # leave the row in `running` so `reset_stuck_running()`
-                    # flips it back to `queued` on the next start and the
-                    # resumed omp session picks up via `--continue`.
-                    # Other exceptions during the drain window (which
-                    # would also see `_shutting_down=True`) MUST still
-                    # mark the row failed; otherwise a genuine bug gets
-                    # silently requeued.
-                    log.info(
-                        "event interrupted by shutdown",
-                        extra={"delivery": row.delivery_id, "key": row.issue_key},
-                    )
-                elif row.delivery_id in self._cancelled:
-                    log.info("event cancelled", extra={"delivery": row.delivery_id})
-                    self.db.mark_event(row.delivery_id, "failed", error="cancelled by operator")
-                else:
-                    tb = traceback.format_exc(limit=20)
-                    log.exception("event handler failed", extra={"delivery": row.delivery_id})
-                    self.db.mark_event(row.delivery_id, "failed", error=f"{exc}\n{tb}")
-            finally:
-                self._cancelled.discard(row.delivery_id)
-                self._shutdown_cancelled.discard(row.delivery_id)
-                self._cancel_hooks.pop(row.delivery_id, None)
-                await self._release(row)
-                clear_current_event(token)
+        slot_uid: int | None = None
+        slot_acquired = False
+        try:
+            if self._slot_pool is not None:
+                slot_uid = await self._slot_pool.acquire()
+                slot_acquired = True
+                await self._dispatch_and_mark(row, slot_uid=slot_uid)
+            elif self._semaphore is not None:
+                async with self._semaphore:
+                    await self._dispatch_and_mark(row)
+            else:
+                await self._dispatch_and_mark(row)
+        except Exception as exc:
+            if row.delivery_id in self._shutdown_cancelled:
+                # `stop()` deliberately interrupted this delivery —
+                # leave the row in `running` so `reset_stuck_running()`
+                # flips it back to `queued` on the next start and the
+                # resumed omp session picks up via `--continue`.
+                # Other exceptions during the drain window (which
+                # would also see `_shutting_down=True`) MUST still
+                # mark the row failed; otherwise a genuine bug gets
+                # silently requeued.
+                log.info(
+                    "event interrupted by shutdown",
+                    extra={"delivery": row.delivery_id, "key": row.issue_key},
+                )
+            elif row.delivery_id in self._cancelled:
+                log.info("event cancelled", extra={"delivery": row.delivery_id})
+                self.db.mark_event(row.delivery_id, "failed", error="cancelled by operator")
+            else:
+                tb = traceback.format_exc(limit=20)
+                log.exception("event handler failed", extra={"delivery": row.delivery_id})
+                self.db.mark_event(row.delivery_id, "failed", error=f"{exc}\n{tb}")
+        finally:
+            self._cancelled.discard(row.delivery_id)
+            self._shutdown_cancelled.discard(row.delivery_id)
+            self._cancel_hooks.pop(row.delivery_id, None)
+            if slot_acquired and self._slot_pool is not None:
+                self._slot_pool.release(slot_uid)
+            await self._release(row)
+            clear_current_event(token)
 
-    async def _dispatch(self, row: EventRow) -> None:
+    async def _dispatch_and_mark(self, row: EventRow, *, slot_uid: int | None = None) -> None:
+        await self._dispatch(row, slot_uid=slot_uid)
+        if row.delivery_id in self._cancelled:
+            self.db.mark_event(row.delivery_id, "failed", error="cancelled by operator")
+        else:
+            self.db.mark_event(row.delivery_id, "done")
+
+    async def _dispatch(self, row: EventRow, *, slot_uid: int | None = None) -> None:
         event = row.event_type
         action = str(row.payload.get("action") or "")
         log.info(
@@ -278,6 +305,7 @@ class WorkerPool:
                 payload=row.payload,
                 delivery_id=row.delivery_id,
                 attempts=row.attempts,
+                slot_uid=slot_uid,
             )
         elif event == "issue_comment" and action == "created":
             issue = row.payload.get("issue") or {}
@@ -291,6 +319,7 @@ class WorkerPool:
                     payload=row.payload,
                     delivery_id=row.delivery_id,
                     attempts=row.attempts,
+                    slot_uid=slot_uid,
                 )
             else:
                 await tasks.handle_comment(
@@ -302,6 +331,7 @@ class WorkerPool:
                     payload=row.payload,
                     delivery_id=row.delivery_id,
                     attempts=row.attempts,
+                    slot_uid=slot_uid,
                 )
         elif event == "pull_request_review_comment" and action == "created":
             await tasks.handle_review(
@@ -313,6 +343,7 @@ class WorkerPool:
                 payload=row.payload,
                 delivery_id=row.delivery_id,
                 attempts=row.attempts,
+                slot_uid=slot_uid,
             )
         elif event == "issues" and action == "closed":
             await tasks.cleanup_workspace(

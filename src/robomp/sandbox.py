@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import platform
 import re
 import secrets
 import shutil
@@ -193,6 +195,19 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProc
     return proc
 
 
+# slot_uid is also the slot-private GID created by entrypoint.sh. Do not use
+# the shared omp group here; that would let every slot read every workspace.
+def _chown_workspace(ws_root: Path, slot_uid: int | None) -> None:
+    if slot_uid is None:
+        return
+    if platform.system() != "Linux":
+        return
+    if os.geteuid() != 0:
+        return
+    subprocess.run(["chown", "-R", f"0:{slot_uid}", str(ws_root)], check=True)
+    subprocess.run(["chmod", "-R", "u=rwX,g=rwX,o=", str(ws_root)], check=True)
+
+
 # ---------- SandboxManager ----------
 
 
@@ -267,6 +282,7 @@ class SandboxManager:
         existing_branch: str | None = None,
         author_name: str,
         author_email: str,
+        slot_uid: int | None = None,
     ) -> Workspace:
         """Create or resume a per-issue worktree."""
         pool = self.ensure_clone(repo=repo, clone_url=clone_url, default_branch=default_branch)
@@ -307,6 +323,7 @@ class SandboxManager:
         # Identity is set on the worktree's shared config; idempotent.
         _safe_run(["git", "config", "user.email", author_email], cwd=repo_dir)
         _safe_run(["git", "config", "user.name", author_name], cwd=repo_dir)
+        _chown_workspace(ws_root, slot_uid)
         return Workspace(
             root=ws_root,
             repo_dir=repo_dir,

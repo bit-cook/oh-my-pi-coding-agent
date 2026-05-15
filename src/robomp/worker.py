@@ -50,6 +50,7 @@ class TaskInputs:
     workspace: Workspace
     delivery_id: str
     attempts: int = 0
+    slot_uid: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -107,6 +108,8 @@ _SCRUBBED_ENV_KEYS: tuple[str, ...] = (
     "ROBOMP_GH_PROXY_HMAC_KEY",
 )
 
+_AGENT_HOME = Path("/srv/agent-home")
+
 
 def _build_extra_env(settings: Settings) -> dict[str, str]:
     """Build the env overlay passed to the omp subprocess.
@@ -116,7 +119,10 @@ def _build_extra_env(settings: Settings) -> dict[str, str]:
     child — `del` on the parent's env would not help us here.
     """
     del settings  # kept for future hooks (model-specific env, etc.)
-    return dict.fromkeys(_SCRUBBED_ENV_KEYS, "")
+    env = dict.fromkeys(_SCRUBBED_ENV_KEYS, "")
+    if _AGENT_HOME.is_dir():
+        env["HOME"] = str(_AGENT_HOME)
+    return env
 
 
 def _has_prior_session(session_dir: Path) -> bool:
@@ -223,10 +229,7 @@ def _run_rpc_blocking(
     settings = inputs.settings
 
     def _on_tool_end(event: ToolExecutionEndEvent) -> None:
-        try:
-            tool_name = event.tool.get("name") if isinstance(event.tool, dict) else getattr(event.tool, "name", None)
-        except Exception:
-            tool_name = None
+        tool_name = event.tool_name
         log.info(
             "tool_end",
             extra={
@@ -286,6 +289,9 @@ def _run_rpc_blocking(
         startup_timeout=60.0,
         max_event_history=50_000,
         extra_args=extra_args,
+        user=inputs.slot_uid,
+        group=inputs.slot_uid if inputs.slot_uid is not None else None,
+        extra_groups=["omp"] if inputs.slot_uid is not None else None,
     ) as client:
         # Arm cancellation: from this point the API can kill the omp subprocess
         # out from under us, which makes `prompt_and_wait` raise an `RpcError`
@@ -378,6 +384,7 @@ async def run_task(
         author_name=inputs.settings.resolved_author_name,
         author_email=inputs.settings.git_author_email,
         inbound_thread_number=pr_number,
+        slot_uid=inputs.slot_uid,
     )
     resuming = _has_prior_session(inputs.workspace.session_dir)
     prompt = _build_prompt(

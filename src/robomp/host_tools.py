@@ -54,6 +54,7 @@ class ToolBindings:
     # `None` for tasks with no inbound thread (e.g. initial triage), in
     # which case the originating issue is used.
     inbound_thread_number: int | None = None
+    slot_uid: int | None = None
 
     @property
     def issue_key(self) -> str:
