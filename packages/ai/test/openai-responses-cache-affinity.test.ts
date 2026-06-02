@@ -158,4 +158,24 @@ describe("openai-responses cache affinity", () => {
 
 		expect(paddedDeveloper?.content).toBe("stable durable context.....");
 	});
+
+	it("aligns prefixes when prompt cache key arrives via extraBody and sessionId is absent", async () => {
+		const captured = await captureOpenAIResponseHeaders({
+			extraBody: { prompt_cache_key: "adapter-cache-key" },
+			cacheOptimizer: {
+				enabled: true,
+				blockSize: 8,
+				paddingText: ".",
+				countTokens: countCacheOptimizerCharacters,
+			},
+		});
+		const input = captured.body?.input as Array<{ role?: string; content?: unknown }> | undefined;
+		const paddedDeveloper = input?.find(
+			item =>
+				item.role === "developer" && typeof item.content === "string" && item.content.startsWith("stable durable"),
+		);
+
+		expect(captured.body?.prompt_cache_key).toBe("adapter-cache-key");
+		expect(paddedDeveloper?.content).toBe("stable durable context.....");
+	});
 });

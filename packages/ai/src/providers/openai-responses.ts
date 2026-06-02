@@ -105,6 +105,11 @@ function updateOpenAIResponsesSegment(segments: CachePrefixSegment[], segmentInd
 	segments[segmentIndex] = { ...segment, text };
 }
 
+function resolveOpenAIResponsesExtraBodyCacheKey(options: OpenAIResponsesOptions | undefined): string | undefined {
+	const candidate = options?.extraBody?.prompt_cache_key;
+	return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+}
+
 function optimizeOpenAIResponsesCacheAlignment(
 	model: Model<"openai-responses">,
 	messages: ResponseInput,
@@ -113,7 +118,8 @@ function optimizeOpenAIResponsesCacheAlignment(
 	promptCacheKey: string | undefined,
 ): string | undefined {
 	const cacheOptimizer = options?.cacheOptimizer;
-	if (!cacheOptimizer?.enabled || !promptCacheKey) return systemInstructions;
+	const effectiveCacheKey = promptCacheKey ?? resolveOpenAIResponsesExtraBodyCacheKey(options);
+	if (!cacheOptimizer?.enabled || !effectiveCacheKey) return systemInstructions;
 	const segments: CachePrefixSegment[] = [];
 	if (systemInstructions) {
 		const segmentIndex = segments.length;
