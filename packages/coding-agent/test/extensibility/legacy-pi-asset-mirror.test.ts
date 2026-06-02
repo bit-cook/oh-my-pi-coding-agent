@@ -51,11 +51,7 @@ describe("legacy pi compat sibling-asset mirroring (issue #1674)", () => {
 	it("copies .css siblings discovered through transitive relative imports", async () => {
 		const dir = await makeExtensionDir("css");
 		await fs.mkdir(path.join(dir, "ui"), { recursive: true });
-		await fs.writeFile(
-			path.join(dir, "index.ts"),
-			`export { theme } from "./ui/theme";`,
-			"utf8",
-		);
+		await fs.writeFile(path.join(dir, "index.ts"), `export { theme } from "./ui/theme";`, "utf8");
 		await fs.writeFile(
 			path.join(dir, "ui", "theme.ts"),
 			[
