@@ -1,6 +1,27 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { StdioTransport, writeFrame } from "../src/mcp/transports/stdio";
 
+/**
+ * Capture every `unhandledRejection` event fired during a test so we can
+ * assert that our async/event-driven paths handle their own rejections.
+ * Bun's `unhandledRejection` event is process-global, so `release()` MUST
+ * be called from a `finally` block in every test that uses it.
+ */
+function trackUnhandled(): { release: () => unknown[]; capture: () => unknown[] } {
+	const seen: unknown[] = [];
+	const listener = (reason: unknown) => {
+		seen.push(reason);
+	};
+	process.on("unhandledRejection", listener);
+	return {
+		release: () => {
+			process.off("unhandledRejection", listener);
+			return seen.slice();
+		},
+		capture: () => seen.slice(),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // writeFrame — the seam that catches synchronous FileSink failures so the
 // async `notify` / `#sendResponse` paths can decide whether to swallow or
@@ -65,6 +86,84 @@ describe("writeFrame", () => {
 
 		expect(writeFrame(sink, "x")).toBe(false);
 	});
+
+	// Deferred-rejection path — issue #1741. On Windows, Bun's FileSink may
+	// return a Promise<number> from write()/flush() when the bytes were
+	// buffered. If the read end of the pipe closes before the buffer drains,
+	// the Promise rejects with EPIPE. Pre-#1741 the sync try/catch missed
+	// the rejection and it escaped as an unhandled promise rejection.
+	it("attaches a rejection handler to a write() that returns a rejected Promise", async () => {
+		const tracker = trackUnhandled();
+		const writeReject = Promise.reject(new Error("EPIPE: broken pipe, write"));
+		const sink = {
+			write() {
+				return writeReject;
+			},
+			flush() {
+				return 0;
+			},
+		};
+
+		const failures: Error[] = [];
+		try {
+			expect(writeFrame(sink, "frame\n", err => failures.push(err))).toBe(true);
+			// Drain the microtask queue + give the unhandledRejection event
+			// a chance to fire.
+			await Bun.sleep(20);
+			expect(failures).toHaveLength(1);
+			expect(failures[0]?.message).toContain("EPIPE");
+			expect(tracker.capture()).toEqual([]);
+		} finally {
+			tracker.release();
+		}
+	});
+
+	it("attaches a rejection handler to a flush() that returns a rejected Promise", async () => {
+		const tracker = trackUnhandled();
+		const flushReject = Promise.reject(new Error("EPIPE: broken pipe, flush"));
+		const sink = {
+			write() {
+				return 0;
+			},
+			flush() {
+				return flushReject;
+			},
+		};
+
+		const failures: Error[] = [];
+		try {
+			expect(writeFrame(sink, "frame\n", err => failures.push(err))).toBe(true);
+			await Bun.sleep(20);
+			expect(failures).toHaveLength(1);
+			expect(failures[0]?.message).toContain("EPIPE");
+			expect(tracker.capture()).toEqual([]);
+		} finally {
+			tracker.release();
+		}
+	});
+
+	it("silently swallows the deferred rejection when no onAsyncFailure is provided", async () => {
+		// Best-effort writers (e.g. #sendResponse to a dead subprocess) don't
+		// care about the failure — but the rejection still MUST NOT escape
+		// as an unhandled rejection. This is the bare-minimum #1741 contract.
+		const tracker = trackUnhandled();
+		const sink = {
+			write() {
+				return Promise.reject(new Error("EPIPE: broken pipe, write"));
+			},
+			flush() {
+				return Promise.reject(new Error("EPIPE: broken pipe, flush"));
+			},
+		};
+
+		try {
+			expect(writeFrame(sink, "frame\n")).toBe(true);
+			await Bun.sleep(20);
+			expect(tracker.capture()).toEqual([]);
+		} finally {
+			tracker.release();
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -81,23 +180,6 @@ describe("writeFrame", () => {
 // On Linux, Bun's FileSink absorbs the EPIPE so the only failure surfaced is
 // the "Transport not connected" guard on subsequent calls; on Windows the
 // write actually throws. Either way the tracker must stay empty.
-// ---------------------------------------------------------------------------
-
-function trackUnhandled(): { release: () => unknown[]; capture: () => unknown[] } {
-	const seen: unknown[] = [];
-	const listener = (reason: unknown) => {
-		seen.push(reason);
-	};
-	process.on("unhandledRejection", listener);
-	return {
-		release: () => {
-			process.off("unhandledRejection", listener);
-			return seen.slice();
-		},
-		capture: () => seen.slice(),
-	};
-}
-
 describe("StdioTransport.notify", () => {
 	let transport: StdioTransport | undefined;
 

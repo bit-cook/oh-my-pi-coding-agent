@@ -10,6 +10,7 @@
 
 - Fixed `/review`'s uncommitted-change mode in Jujutsu repositories to read `jj diff --git` from the current workspace, so non-default JJ workspaces include their working-copy changes instead of falling back to the colocated Git checkout.
 - Fixed empty assistant stop retry continuations preserving auto-retry state until a non-empty assistant turn completes or recovery reaches its retry cap.
+- Fixed an intermittent `[Unhandled Rejection] Error: EPIPE: broken pipe, write` on Windows when launching `omp`. Bun's `FileSink.write()`/`flush()` may return a `Promise<number>` that rejects later when the read end of a pipe closes; the synchronous `try/catch` around the MCP stdio transport's `request()` and `writeFrame()` only caught synchronous throws, letting the deferred rejection escape via `processTicksAndRejections`. The transport now attaches a rejection handler to any returned `Promise`, routes async write failures through the same teardown path as sync failures, and rejects the pending request directly so it never hangs ([#1741](https://github.com/can1357/oh-my-pi/issues/1741)).
 
 ### Changed
 
