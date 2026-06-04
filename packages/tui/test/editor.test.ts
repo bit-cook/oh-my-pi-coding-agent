@@ -1202,18 +1202,16 @@ describe("Editor component", () => {
 			const width = 20;
 
 			editor.setText("Word1 Word2 Word3 Word4 Word5 Word6");
-			const lines = editor.render(width);
+			// renderContentLines strips the editor's left/right chrome (now plain padding)
+			// so we see only what the wrap algorithm chose to emit.
+			const contentLines = renderContentLines(editor, width);
 
-			// Get content lines (between borders)
-			const contentLines = lines.slice(1, -1);
-
-			// No line should start with whitespace (except for padding at the end)
-			for (let i = 0; i < contentLines.length; i++) {
-				const line = stripVTControlCharacters(contentLines[i]!);
-				const trimmedStart = line.trimStart();
-				// The line should either be all padding or start with a word character
-				if (trimmedStart.length > 0) {
-					expect(/^\s+\S/.test(line.trimEnd())).toBe(false);
+			for (const line of contentLines) {
+				if (line.length > 0) {
+					// After stripping the editor's leading indent, no content line should still
+					// begin with whitespace — that would mean the wrap algorithm carried leading
+					// space onto a new visual line.
+					expect(/^\s/.test(line)).toBe(false);
 				}
 			}
 		});
@@ -2103,6 +2101,89 @@ describe("Editor component", () => {
 			// The leading Hangul jamo block (U+1100..U+1112) only appears in
 			// NFD output. The Editor must not leak it after normalization.
 			expect(rendered).not.toMatch(/[\u1100-\u1112]/);
+		});
+
+		describe("Terminal clipboard friendliness (issue #1812)", () => {
+			// The shared test theme uses `|` for BOTH `box.vertical` and `inputCursor`, which
+			// would conflate the cursor glyph with the side rails we're trying to ban. Build a
+			// local theme that distinguishes them so the assertion targets only chrome.
+			const SIDE_RAIL = "│";
+			const TOP_CORNER_LEFT = "╭";
+			const TOP_CORNER_RIGHT = "╮";
+			const BOTTOM_CORNER_LEFT = "╰";
+			const BOTTOM_CORNER_RIGHT = "╯";
+			const HORIZONTAL = "─";
+			const CURSOR = "▎";
+			const themedSymbols = {
+				...defaultEditorTheme.symbols,
+				inputCursor: CURSOR,
+				boxRound: {
+					topLeft: TOP_CORNER_LEFT,
+					topRight: TOP_CORNER_RIGHT,
+					bottomLeft: BOTTOM_CORNER_LEFT,
+					bottomRight: BOTTOM_CORNER_RIGHT,
+					horizontal: HORIZONTAL,
+					vertical: SIDE_RAIL,
+				},
+			};
+			const themed = { ...defaultEditorTheme, symbols: themedSymbols };
+			// Glyphs that, if found on a *content* row, prove the side-rail / corner leak
+			// from the issue. Top-border glyphs (`╭ ╮ ─` on the dedicated top row) are fine;
+			// the cursor `▎` is also fine — that's part of the user's text.
+			const FORBIDDEN_ON_CONTENT_ROWS = [SIDE_RAIL, BOTTOM_CORNER_LEFT, BOTTOM_CORNER_RIGHT];
+
+			function simulateTerminalCopy(rendered: string[]): string {
+				// Modern terminals (gnome-terminal, iTerm2, Alacritty, WezTerm, Konsole,
+				// Windows Terminal) trim trailing whitespace on each copied row. Mouse-drag
+				// selection that starts above the editor's first content row copies that
+				// row from column 0 through the last visible non-whitespace cell.
+				return rendered.map(r => stripVTControlCharacters(r).replace(/\s+$/u, "")).join("\n");
+			}
+
+			it("does not leak side rails or bottom corners on content rows", () => {
+				const editor = new Editor(themed);
+				editor.setText(
+					"Technology has become one of the most important parts of modern life. " +
+						"Almost every person uses some type of technology every day, " +
+						"whether it is a phone, computer, television, car, medical device, or even a simple household appliance. " +
+						"Important because it helps people connect with each other.",
+				);
+
+				const rendered = editor.render(120);
+
+				// Content rows = everything after the dedicated top border row. After the fix
+				// these must contain none of the side-rail / bottom-corner glyphs.
+				for (const row of rendered.slice(1)) {
+					const plain = stripVTControlCharacters(row);
+					for (const ch of FORBIDDEN_ON_CONTENT_ROWS) {
+						expect(plain.includes(ch)).toBe(false);
+					}
+				}
+
+				// A simulated terminal copy of the content rows yields no forbidden glyphs.
+				const copied = simulateTerminalCopy(rendered.slice(1));
+				for (const ch of FORBIDDEN_ON_CONTENT_ROWS) {
+					expect(copied.includes(ch)).toBe(false);
+				}
+
+				// The actual user text survives intact (with wrap-induced whitespace).
+				const flat = copied.replace(/\s+/g, " ").trim();
+				expect(flat).toContain("Technology has become one of the most important");
+				expect(flat).toContain("connect with each other.");
+			});
+
+			it("keeps the top border decorative so the editor stays visually framed", () => {
+				const editor = new Editor(themed);
+				editor.setText("hi");
+				const [topBorder] = editor.render(40);
+				expect(topBorder).toBeDefined();
+				const plain = stripVTControlCharacters(topBorder!);
+				// Corners + horizontals anchor the top row visually and carry status content
+				// added via setTopBorder().
+				expect(plain.includes(TOP_CORNER_LEFT)).toBe(true);
+				expect(plain.includes(TOP_CORNER_RIGHT)).toBe(true);
+				expect(plain.includes(HORIZONTAL)).toBe(true);
+			});
 		});
 	});
 });

@@ -704,7 +704,6 @@ export class Editor implements Component, Focusable {
 		const borderWidth = this.#getHorizontalChromeWidth(paddingX);
 		const topLeft = this.borderColor(`${box.topLeft}${box.horizontal.repeat(paddingX)}`);
 		const topRight = this.borderColor(`${box.horizontal.repeat(paddingX)}${box.topRight}`);
-		const bottomLeft = this.borderColor(`${box.bottomLeft}${box.horizontal}${padding(Math.max(0, paddingX - 1))}`);
 		const horizontal = this.borderColor(box.horizontal);
 
 		// Layout the text
@@ -749,7 +748,6 @@ export class Editor implements Component, Focusable {
 			const layoutLine = visibleLayoutLines[visibleIndex]!;
 			let displayText = layoutLine.text;
 			let displayWidth = visibleWidth(layoutLine.text);
-			let cursorInPadding = false;
 			let decorated = false;
 			const showPromptGutter = promptGutter !== undefined && visibleIndex === 0;
 			const gutterText =
@@ -873,9 +871,6 @@ export class Editor implements Component, Focusable {
 						displayText = before + marker + cursor;
 						displayWidth += cursorWidth;
 					}
-					if (displayWidth > lineContentWidth && paddingX > 0) {
-						cursorInPadding = true;
-					}
 				}
 			}
 
@@ -893,20 +888,15 @@ export class Editor implements Component, Focusable {
 				continue;
 			}
 
-			// All lines have consistent borders based on padding
-			const isLastLine = visibleIndex === visibleLayoutLines.length - 1;
-			const rightPaddingWidth = Math.max(0, paddingX - (cursorInPadding ? 1 : 0));
-			if (isLastLine) {
-				const bottomRightPadding = Math.max(0, paddingX - 1 - (cursorInPadding ? 1 : 0));
-				const bottomRightAdjusted = this.borderColor(
-					`${padding(bottomRightPadding)}${box.horizontal}${box.bottomRight}`,
-				);
-				result.push(`${bottomLeft}${displayText}${linePad}${bottomRightAdjusted}`);
-			} else {
-				const leftBorder = this.borderColor(`${box.vertical}${padding(paddingX)}`);
-				const rightBorder = this.borderColor(`${padding(rightPaddingWidth)}${box.vertical}`);
-				result.push(leftBorder + displayText + linePad + rightBorder);
-			}
+			// Content rows are rendered without side rails or bottom corners. Terminals copy
+			// whatever non-whitespace sits at row edges (trailing whitespace is trimmed), so the
+			// box-drawing glyphs that used to hug the text leaked straight into the clipboard.
+			// Keep the top border row for visual anchor + status content; bash/python/thinking
+			// border color still tints it. Trailing pad fills to full width to match the top
+			// border and to keep row widths stable for the differential renderer. Issue #1812.
+			const leadingPad = padding(paddingX + 1);
+			const trailingPadWidth = Math.max(0, width - (paddingX + 1) - displayWidth);
+			result.push(leadingPad + displayText + padding(trailingPadWidth));
 		}
 
 		// Add autocomplete list if active
