@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed MCP tools hanging in `write` approval mode by preserving custom-tool approval tiers and classifying MCP bridge tools as workspace-write operations ([#2062](https://github.com/can1357/oh-my-pi/issues/2062)).
+
 ## [15.10.1] - 2026-06-07
 
 ### Added
@@ -49,8 +53,6 @@
 - Removed the `/background` (and `/bg`) slash command and the background-mode subsystem it was the sole entry point for — `InteractiveMode.isBackgrounded`, `createBackgroundUiContext`, `handleBackgroundEvent`, and every `isBackgrounded` guard across the input/event/extension-UI controllers and UI helpers. The command suspended the whole process group via `SIGTSTP` (a leftover testing shortcut) instead of detaching the running agent, which is not the expected workflow — use terminal panes or a multiplexer instead.
 
 ### Fixed
-
-- Fixed MCP tools hanging in `write` approval mode by preserving custom-tool approval tiers and classifying MCP bridge tools as workspace-write operations ([#2062](https://github.com/can1357/oh-my-pi/issues/2062)).
 
 - Fixed inline `find` and `search` result blocks to align with grouped `read` output and render their success headers with the normal tool-title color instead of accent blue.
 
