@@ -78,6 +78,16 @@ function baseContext(): Context {
 	};
 }
 
+function localOllamaCompletionsModel(): Model<"openai-completions"> {
+	return buildModel({
+		...gpt4oMiniSpec,
+		api: "openai-completions",
+		provider: "ollama" as Model["provider"],
+		id: "local-12b",
+		baseUrl: "http://ollama.invalid/v1",
+	} as ModelSpec<"openai-completions">);
+}
+
 async function captureOpenAICompletionsPayload(
 	model: Model<"openai-completions">,
 	context: Context = baseContext(),
@@ -596,13 +606,7 @@ describe("openai-completions compatibility", () => {
 		expect(result.content[0]).toMatchObject({ type: "text", text: "done" });
 	});
 	it("surfaces empty Ollama length completions as context-window errors", async () => {
-		const model: Model<"openai-completions"> = buildModel({
-			...gpt4oMiniSpec,
-			api: "openai-completions",
-			provider: "ollama" as Model["provider"],
-			id: "local-12b",
-			baseUrl: "http://ollama.invalid/v1",
-		} as ModelSpec<"openai-completions">);
+		const model = localOllamaCompletionsModel();
 		const fetchMock = createMockFetch([
 			{
 				id: "chatcmpl-empty-length",
@@ -638,6 +642,45 @@ describe("openai-completions compatibility", () => {
 		expect(result.content).toEqual([]);
 		expect(result.usage.input).toBe(8191);
 		expect(result.usage.output).toBe(1);
+	});
+	it("preserves reasoning-only Ollama length completions for recovery", async () => {
+		const model = localOllamaCompletionsModel();
+		const fetchMock = createMockFetch([
+			{
+				id: "chatcmpl-reasoning-length",
+				object: "chat.completion.chunk",
+				created: 0,
+				model: model.id,
+				choices: [{ index: 0, delta: { role: "assistant", reasoning_content: "still thinking" } }],
+			},
+			{
+				id: "chatcmpl-reasoning-length",
+				object: "chat.completion.chunk",
+				created: 0,
+				model: model.id,
+				choices: [{ index: 0, delta: {}, finish_reason: "length" }],
+			},
+			"[DONE]",
+		]);
+
+		const stream = streamOpenAICompletions(model, baseContext(), {
+			apiKey: "test-key",
+			fetch: fetchMock,
+		});
+		const resultPromise = stream.result();
+		const eventTypes: string[] = [];
+		for await (const event of stream) {
+			eventTypes.push(event.type);
+		}
+		const result = await resultPromise;
+
+		expect(result.stopReason).toBe("length");
+		expect(eventTypes).toContain("done");
+		expect(eventTypes).not.toContain("error");
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.content).toEqual([
+			{ type: "thinking", thinking: "still thinking", thinkingSignature: "reasoning_content" },
+		]);
 	});
 	it("preserves empty non-Ollama length completions for recovery", async () => {
 		const model: Model<"openai-completions"> = buildModel({

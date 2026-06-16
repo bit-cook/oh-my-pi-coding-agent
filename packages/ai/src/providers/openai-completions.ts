@@ -1162,7 +1162,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				output.stopReason = "toolUse";
 			}
 
-			if (model.provider === "ollama" && output.stopReason === "length" && !hasVisibleCompletionContent(output)) {
+			if (model.provider === "ollama" && output.stopReason === "length" && !hasCompletionContent(output)) {
 				output.stopReason = "error";
 				output.errorMessage = EMPTY_OLLAMA_LENGTH_COMPLETION_MESSAGE;
 			}
@@ -2202,10 +2202,11 @@ function shouldRetryWithoutStrictTools(
 
 const NON_WHITESPACE_RE = /\S/;
 
-function hasVisibleCompletionContent(message: AssistantMessage): boolean {
+function hasCompletionContent(message: AssistantMessage): boolean {
 	for (const block of message.content) {
 		if (block.type === "toolCall") return true;
 		if (block.type === "text" && NON_WHITESPACE_RE.test(block.text)) return true;
+		if (block.type === "thinking" && NON_WHITESPACE_RE.test(block.thinking)) return true;
 	}
 	return false;
 }
