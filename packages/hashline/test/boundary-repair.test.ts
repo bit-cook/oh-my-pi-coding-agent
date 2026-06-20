@@ -138,6 +138,15 @@ describe("boundary-balance repair", () => {
 		expect(warnings.some(w => /delimiter-balance/.test(w))).toBe(true);
 	});
 
+	it("does not spare a deleted closer when another hunk deletes its opener", () => {
+		const file = ["if enabled {", '\tText("Old")', "}", '\tText("Tail")'].join("\n");
+		const diff = ["DEL 1", "SWAP 2.=3:", '+Text("New")'].join("\n");
+		const { text, warnings } = apply(file, diff);
+
+		expect(text).toBe(['Text("New")', '\tText("Tail")'].join("\n"));
+		expect(warnings).toHaveLength(0);
+	});
+
 	// If the selected range is already imbalanced internally, a payload that
 	// restates the range's final closer must not trigger "missing closer" repair;
 	// keeping the deleted suffix would duplicate the closer outside the payload.

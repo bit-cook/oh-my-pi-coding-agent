@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed delimiter-balance repair so a valid multi-hunk replacement that deletes an opener in a separate hunk does not keep the matching deleted closer. ([#3142](https://github.com/can1357/oh-my-pi/issues/3142))
+
 ## [16.1.2] - 2026-06-19
 
 ### Changed

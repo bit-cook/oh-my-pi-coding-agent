@@ -312,6 +312,32 @@ function balanceIsZero(a: DelimiterBalance): boolean {
 	return a.paren === 0 && a.bracket === 0 && a.brace === 0;
 }
 
+function balanceComponentCovers(candidate: number, target: number): boolean {
+	if (target === 0) return true;
+	return candidate > 0 === target > 0 && Math.abs(candidate) >= Math.abs(target);
+}
+
+function balanceCovers(candidate: DelimiterBalance, target: DelimiterBalance): boolean {
+	return (
+		balanceComponentCovers(candidate.paren, target.paren) &&
+		balanceComponentCovers(candidate.bracket, target.bracket) &&
+		balanceComponentCovers(candidate.brace, target.brace)
+	);
+}
+
+function computeEditBalanceDelta(edits: readonly AppliedEdit[], fileLines: readonly string[]): DelimiterBalance {
+	const inserted: string[] = [];
+	const deleted: string[] = [];
+	for (const edit of edits) {
+		if (edit.kind === "insert") {
+			inserted.push(edit.text);
+		} else {
+			deleted.push(fileLines[edit.anchor.line - 1] ?? "");
+		}
+	}
+	return balanceDelta(computeDelimiterBalance(inserted), computeDelimiterBalance(deleted));
+}
+
 interface ReplacementGroup {
 	/** Positions in the edit array of the payload inserts, in payload order. */
 	insertIndices: number[];
@@ -601,6 +627,7 @@ function repairReplacementBoundaries(
 } {
 	const out: AppliedEdit[] = [];
 	const warnings: string[] = [];
+	const patchDelta = computeEditBalanceDelta(edits, fileLines);
 	let i = 0;
 	while (i < edits.length) {
 		const group = findReplacementGroup(edits, i);
@@ -661,7 +688,7 @@ function repairReplacementBoundaries(
 			out.push(...inserts.slice(dupPrefix), ...deletes);
 			continue;
 		}
-		const droppedClosers = findDroppedSuffixClosers(group, fileLines, delta);
+		const droppedClosers = balanceCovers(patchDelta, delta) ? findDroppedSuffixClosers(group, fileLines, delta) : 0;
 		if (droppedClosers > 0) {
 			warnings.push(
 				describeBoundaryRepair(
